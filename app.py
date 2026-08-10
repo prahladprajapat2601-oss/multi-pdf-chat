@@ -1,56 +1,76 @@
 import os
 import streamlit as st
+from pathlib import Path
 from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 from PyPDF2 import PdfReader
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_experimental.text_splitter import SemanticChunker
+from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_classic.chains.retrieval import create_retrieval_chain
+from langchain_core.runnables import RunnableParallel
+from langchain_core.output_parsers import StrOutputParser
 
-from htmlTemplates import css, bot_template, user_template
+from operator import itemgetter
 
-
-# -------------------------------
-# Read PDFs
-# -------------------------------
 
 def get_pdf_text(pdf_docs):
-    text = ""
+    documents = []
 
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
 
-        for page in pdf_reader.pages:
+        for page_number, page in enumerate(pdf_reader.pages, start=1):
             page_text = page.extract_text()
 
-            if page_text:
-                text += page_text
+            if page_text and page_text.strip():
+                documents.append(
+                    Document(
+                        page_content=page_text,
+                        metadata={
+                            "source": pdf.name,
+                            "page": page_number
+                        }
+                    )
+                )
 
-    return text
-
-
-# -------------------------------
-# Split text
-# -------------------------------
-
-def get_text_chunks(raw_text):
-
-    splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1500,
-    chunk_overlap=300
-)
-
-    return splitter.split_text(raw_text)
+    return documents
 
 
-# -------------------------------
-# Vector Store
-# -------------------------------
+def get_text_chunks(documents):
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+
+    splitter = SemanticChunker(
+        embeddings,
+        breakpoint_threshold_type="percentile",
+        breakpoint_threshold_amount=95
+    )
+
+    chunks = []
+
+    for document in documents:
+
+        page_chunks = splitter.create_documents(
+            [document.page_content],
+            metadatas=[document.metadata]
+        )
+
+        chunks.extend(
+            chunk for chunk in page_chunks
+            if chunk.page_content.strip()
+        )
+
+    return chunks
+
 
 def get_vectorstore(text_chunks):
 
@@ -58,104 +78,111 @@ def get_vectorstore(text_chunks):
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    vectorstore = FAISS.from_texts(
-        texts=text_chunks,
+    return FAISS.from_documents(
+        documents=text_chunks,
         embedding=embeddings
     )
 
-    return vectorstore
-
-
-# -------------------------------
-# Gemini
-# -------------------------------
 
 def get_llm():
 
+    api_key = os.getenv("GOOGLE_API_KEY")
+
+    if not api_key:
+        raise ValueError(
+            "GOOGLE_API_KEY was not found in the .env file."
+        )
+
     return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
-        temperature=0.3
+        model="gemini-3.6-flash",
+        google_api_key=os.getenv("GOOGLE_API_KEY")
     )
-
-
-# -------------------------------
-# Prompt
-# -------------------------------
 
 def get_prompt():
 
-    prompt = ChatPromptTemplate.from_template("""
-You are an expert cybersecurity tutor.
+    return ChatPromptTemplate.from_template("""
+You are an expert cybersecurity tutor helping a student understand
+information from uploaded PDF documents.
 
-Answer the user's question ONLY using the retrieved context.
+Answer the user's question using ONLY the retrieved context.
 
-Instructions:
-1. Read all the retrieved context before answering.
-2. If multiple context chunks contain relevant information, combine them into one complete answer.
-3. Do not answer using only a single example if the context contains a broader explanation.
-4. Explain the answer in simple language suitable for a student.
-5. Use bullet points whenever appropriate.
-6. If the context does not contain the answer, reply exactly:
+1. Use only information supported by the retrieved context.
+2. Do not use outside knowledge.
+3. Do not hallucinate or invent facts.
+4. Read all retrieved chunks before answering.
+5. Combine relevant information from multiple chunks.
+6. Explain concepts in simple language.
+7. Use numbered points for main ideas.
+8. Use bullet points for supporting details.
+9. Keep the answer focused on the question.
+
+If the retrieved context does not contain enough information,
+respond exactly:
+
 "I couldn't find that information in the uploaded PDFs."
 
-Respond in the following format:
-
 ## Answer
-Provide a concise answer.
+
+Give a direct and concise answer.
 
 ## Explanation
-Explain the concept in detail using only the retrieved context.
+
+1. Explain the first important point.
+2. Explain the next important point.
+3. Add additional points only when relevant.
 
 ## Key Points
-- Point 1
-- Point 2
-- Point 3
+
+- Important point 1
+- Important point 2
+- Important point 3
 
 ## Example
-Provide an example only if one exists in the retrieved context.
 
-Context:
+- Provide an example only if it exists in the retrieved context.
+- Otherwise write:
+  "No example was provided in the uploaded PDFs."
+
+Retrieved Context:
 {context}
 
-Question:
+User Question:
 {input}
 """)
 
-    return prompt
-
-
-# -------------------------------
-# Build Chain
-# -------------------------------
 
 def get_chain(vectorstore):
 
     llm = get_llm()
-
     prompt = get_prompt()
 
-    document_chain = create_stuff_documents_chain(
-        llm,
-        prompt
-    )
-
     retriever = vectorstore.as_retriever(
-        search_type="similarity",
-        search_kwargs={"k": 8}
+        search_type="mmr",
+        search_kwargs={
+            "k": 8,
+            "fetch_k": 20,
+            "lambda_mult": 0.5
+        }
     )
 
-    retrieval_chain = create_retrieval_chain(
-        retriever,
-        document_chain
+    def format_docs(docs):
+        return "\n\n".join(
+            doc.page_content
+            for doc in docs
+        )
+
+    chain = (
+        RunnableParallel(
+            context=itemgetter("input") | retriever | format_docs,
+            input=itemgetter("input")
+        )
+        | prompt
+        | llm
+        | StrOutputParser()
     )
 
-    return retrieval_chain
+    return chain
 
-
-# -------------------------------
-# User Input
-# -------------------------------
 
 def handle_userinput(question):
 
@@ -164,78 +191,17 @@ def handle_userinput(question):
     )
 
     st.session_state.chat_history.append(
-        {"role": "user", "content": question}
+        {
+            "role": "user",
+            "content": question
+        }
     )
 
     st.session_state.chat_history.append(
-        {"role": "assistant", "content": response["answer"]}
+        {
+            "role": "assistant",
+            "content": response
+        }
     )
 
-# -------------------------------
-# Main
-# -------------------------------
-
-def main():
-
-    load_dotenv()
-
-    st.set_page_config(
-        page_title="Chat with Multiple PDFs",
-        page_icon="📚"
-    )
-
-    if "chain" not in st.session_state:
-        st.session_state.chain = None
-
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-
-    st.header("📚 Chat with Multiple PDFs")
-
-    # Display previous messages
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Chat input
-    question = st.chat_input("Ask a question about your PDFs")
-
-    if question:
-
-        if st.session_state.chain is None:
-            st.warning("Please upload PDFs first.")
-        else:
-            handle_userinput(question)
-
-    # Sidebar
-    with st.sidebar:
-
-        st.subheader("Upload PDFs")
-
-        pdf_docs = st.file_uploader(
-            "Upload PDF files",
-            type="pdf",
-            accept_multiple_files=True
-        )
-
-        if st.button("Process"):
-
-            if pdf_docs:
-
-                with st.spinner("Processing..."):
-
-                    raw_text = get_pdf_text(pdf_docs)
-
-                    chunks = get_text_chunks(raw_text)
-
-                    vectorstore = get_vectorstore(chunks)
-
-                    st.session_state.chain = get_chain(vectorstore)
-
-                st.success("✅ PDFs processed successfully!")
-
-            else:
-                st.warning("Please upload at least one PDF.")
-
-if __name__ == "__main__":
-    main()
+    return response
