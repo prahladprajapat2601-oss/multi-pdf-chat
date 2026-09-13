@@ -18,9 +18,7 @@ def main():
         initial_sidebar_state="expanded"
     )
 
-    # -----------------------------
-    # Session State
-    # -----------------------------
+    
 
     if "chain" not in st.session_state:
         st.session_state.chain = None
@@ -31,13 +29,11 @@ def main():
     if "processed_files" not in st.session_state:
         st.session_state.processed_files = []
 
-    # -----------------------------
-    # Sidebar
-    # -----------------------------
+    
 
     with st.sidebar:
 
-        st.title("📚 PDF Study Assistant")
+        st.title("PDF Study Assistant")
 
         st.caption(
             "Upload PDFs and ask questions about their content."
@@ -45,7 +41,9 @@ def main():
 
         st.divider()
 
-        st.subheader("📄 Upload Documents")
+        
+
+        st.subheader("Upload Documents")
 
         pdf_docs = st.file_uploader(
             "Choose PDF files",
@@ -60,7 +58,7 @@ def main():
             )
 
             for pdf in pdf_docs:
-                st.caption(f"📄 {pdf.name}")
+                st.caption(f"{pdf.name}")
 
         else:
 
@@ -70,12 +68,9 @@ def main():
 
         st.divider()
 
-        # -----------------------------
-        # Process PDFs
-        # -----------------------------
-
+      
         if st.button(
-            "⚡ Process Documents",
+            "Process Documents",
             type="primary",
             use_container_width=True
         ):
@@ -94,10 +89,12 @@ def main():
                         "Processing your PDFs..."
                     ):
 
+                       
                         documents = get_pdf_text(
                             pdf_docs
                         )
 
+                       
                         chunks = get_text_chunks(
                             documents
                         )
@@ -106,46 +103,49 @@ def main():
                             chunks
                         )
 
+                      
                         st.session_state.chain = get_chain(
                             vectorstore
                         )
 
+                        
                         st.session_state.processed_files = [
                             pdf.name
                             for pdf in pdf_docs
                         ]
 
+                     
                         st.session_state.chat_history = []
 
                     st.success(
-                        "✅ PDFs processed successfully!"
+                        "PDFs processed successfully!"
                     )
 
                 except Exception as e:
 
                     st.error(
-                        "Something went wrong."
+                        "Something went wrong while processing the PDFs."
                     )
 
                     st.exception(e)
-
-        # -----------------------------
-        # Status
-        # -----------------------------
 
         st.divider()
 
         if st.session_state.chain:
 
-            st.success("🟢 Documents ready")
+            st.success("Documents ready")
 
             st.subheader("Processed PDFs")
 
             for file_name in st.session_state.processed_files:
-                st.caption(f"✓ {file_name}")
 
+                st.caption(
+                    f" {file_name}"
+                )
+
+    
             if st.button(
-                "🗑️ Clear Conversation",
+                "Clear Conversation",
                 use_container_width=True
             ):
 
@@ -159,17 +159,13 @@ def main():
                 "No documents processed yet."
             )
 
-    # -----------------------------
-    # Main Chat
-    # -----------------------------
-
-    st.title("💬 Chat with Your PDFs")
+    st.title("Chat with Your PDFs")
 
     if not st.session_state.chain:
 
         st.markdown(
             """
-### 👋 Welcome!
+### Welcome!
 
 Upload your PDF documents from the sidebar.
 
@@ -183,23 +179,13 @@ Then click **Process Documents** and start asking questions.
             "Ask questions about your uploaded documents."
         )
 
-    # -----------------------------
-    # Chat History
-    # -----------------------------
 
     for message in st.session_state.chat_history:
 
-        with st.chat_message(
-            message["role"]
-        ):
+        st.markdown(
+            message["content"]
+        )
 
-            st.markdown(
-                message["content"]
-            )
-
-    # -----------------------------
-    # Chat Input
-    # -----------------------------
 
     question = st.chat_input(
         "Ask something about your PDFs..."
@@ -207,6 +193,7 @@ Then click **Process Documents** and start asking questions.
 
     if question:
 
+   
         if st.session_state.chain is None:
 
             st.warning(
@@ -215,28 +202,48 @@ Then click **Process Documents** and start asking questions.
 
             return
 
-        with st.chat_message("user"):
-            st.markdown(question)
 
-        with st.chat_message("assistant"):
+        st.markdown(
+            f"""
+            <div style="
+                background-color: #1e3a5f;
+                padding: 12px 16px;
+                border-radius: 10px;
+                margin: 15px 0;
+                color: white;
+                font-weight: 600;
+                font-size: 16px;">
+                {question}
+            </div>
+         """,
+       unsafe_allow_html=True
+)
 
-            with st.spinner("Searching your PDFs..."):
 
-                try:
+        with st.spinner(
+            "Searching your PDFs..."
+        ):
 
-                    response = handle_userinput(
-                        question
-                    )
+            try:
 
-                    st.markdown(response)
+                response = handle_userinput(
+                    question
+                )
 
-                except Exception as e:
+                
+                st.markdown(
+                    response
+                )
 
-                    st.error(
-                        "Could not generate the answer."
-                    )
+            except Exception as e:
 
-                    st.exception(e)
+                st.error(
+                    "Could not generate the answer."
+                )
+
+                st.exception(e)
+
+
 
 
 if __name__ == "__main__":
