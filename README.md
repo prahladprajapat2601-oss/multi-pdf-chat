@@ -1,4 +1,4 @@
-# 📚 Multi PDF Chatbot
+#  Multi PDF Chatbot
 
 A Streamlit application that allows users to chat with multiple PDF documents using:
 
